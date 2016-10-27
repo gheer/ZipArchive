@@ -155,11 +155,6 @@ typedef struct
     ZPOS64_T pos_zip64extrainfo;
     ZPOS64_T totalCompressedData;
     ZPOS64_T totalUncompressedData;
-#ifndef NOCRYPT
-    unsigned long keys[3];     /* keys defining the pseudo-random sequence */
-    const unsigned long* pcrc_32_tab;
-    int crypt_header_size;
-#endif
 } curfile64_info;
 
 typedef struct
@@ -179,12 +174,6 @@ typedef struct
 #endif
     
 } zip64_internal;
-
-
-#ifndef NOCRYPT
-#define INCLUDECRYPTINGCODE_IFCRYPTALLOWED
-#include "crypt.h"
-#endif
 
 local linkedlist_datablock_internal* allocate_new_datablock()
 {
@@ -814,24 +803,27 @@ int LoadCentralDirectoryRecord(zip64_internal* pziinit)
         ZPOS64_T size_central_dir_to_read = size_central_dir;
         size_t buf_size = SIZEDATA_INDATABLOCK;
         void* buf_read = (void*)ALLOC(buf_size);
-        if (ZSEEK64(pziinit->z_filefunc, pziinit->filestream, offset_central_dir + byte_before_the_zipfile, ZLIB_FILEFUNC_SEEK_SET) != 0)
-            err=ZIP_ERRNO;
-        
-        while ((size_central_dir_to_read>0) && (err==ZIP_OK))
+        if (buf_read)
         {
-            ZPOS64_T read_this = SIZEDATA_INDATABLOCK;
-            if (read_this > size_central_dir_to_read)
-                read_this = size_central_dir_to_read;
-            
-            if (ZREAD64(pziinit->z_filefunc, pziinit->filestream,buf_read,(uLong)read_this) != read_this)
+            if (ZSEEK64(pziinit->z_filefunc, pziinit->filestream, offset_central_dir + byte_before_the_zipfile, ZLIB_FILEFUNC_SEEK_SET) != 0)
                 err=ZIP_ERRNO;
             
-            if (err==ZIP_OK)
-                err = add_data_in_datablock(&pziinit->central_dir,buf_read, (uLong)read_this);
-            
-            size_central_dir_to_read-=read_this;
+            while ((size_central_dir_to_read>0) && (err==ZIP_OK))
+            {
+                ZPOS64_T read_this = SIZEDATA_INDATABLOCK;
+                if (read_this > size_central_dir_to_read)
+                    read_this = size_central_dir_to_read;
+                
+                if (ZREAD64(pziinit->z_filefunc, pziinit->filestream,buf_read,(uLong)read_this) != read_this)
+                    err=ZIP_ERRNO;
+                
+                if (err==ZIP_OK)
+                    err = add_data_in_datablock(&pziinit->central_dir,buf_read, (uLong)read_this);
+                
+                size_central_dir_to_read-=read_this;
+            }
+            TRYFREE(buf_read);
         }
-        TRYFREE(buf_read);
     }
     pziinit->begin_pos = byte_before_the_zipfile;
     pziinit->number_entry = number_entry_CD;
@@ -1071,10 +1063,8 @@ extern int ZEXPORT zipOpenNewFileInZip4_64 (zipFile file, const char* filename, 
     uInt i;
     int err = ZIP_OK;
     
-#    ifdef NOCRYPT
     if (password != NULL)
         return ZIP_PARAMERROR;
-#    endif
     
     if (file == NULL)
         return ZIP_PARAMERROR;
@@ -1243,24 +1233,6 @@ extern int ZEXPORT zipOpenNewFileInZip4_64 (zipFile file, const char* filename, 
             
         }
     
-#    ifndef NOCRYPT
-    zi->ci.crypt_header_size = 0;
-    if ((err==Z_OK) && (password != NULL))
-    {
-        unsigned char bufHead[RAND_HEAD_LEN];
-        unsigned int sizeHead;
-        zi->ci.encrypt = 1;
-        zi->ci.pcrc_32_tab = (const unsigned long*)get_crc_table();
-        /*init_keys(password,zi->ci.keys,zi->ci.pcrc_32_tab);*/
-        
-        sizeHead=crypthead(password,bufHead,RAND_HEAD_LEN,zi->ci.keys,zi->ci.pcrc_32_tab,crcForCrypting);
-        zi->ci.crypt_header_size = sizeHead;
-        
-        if (ZWRITE64(zi->z_filefunc,zi->filestream,bufHead,sizeHead) != sizeHead)
-            err = ZIP_ERRNO;
-    }
-#    endif
-    
     if (err==Z_OK)
         zi->in_opened_file_inzip = 1;
     return err;
@@ -1367,16 +1339,6 @@ extern int ZEXPORT zipOpenNewFileInZip (zipFile file, const char* filename, cons
 local int zip64FlushWriteBuffer(zip64_internal* zi)
 {
     int err=ZIP_OK;
-    
-    if (zi->ci.encrypt != 0)
-    {
-#ifndef NOCRYPT
-        uInt i;
-        int t;
-        for (i=0;i<zi->ci.pos_in_buffered_data;i++)
-            zi->ci.buffered_data[i] = zencode(zi->ci.keys, zi->ci.pcrc_32_tab, zi->ci.buffered_data[i],t);
-#endif
-    }
     
     if (ZWRITE64(zi->z_filefunc,zi->filestream,zi->ci.buffered_data,zi->ci.pos_in_buffered_data) != zi->ci.pos_in_buffered_data)
         err = ZIP_ERRNO;
@@ -1613,10 +1575,6 @@ extern int ZEXPORT zipCloseFileInZipRaw64 (zipFile file, ZPOS64_T uncompressed_s
         uncompressed_size = zi->ci.totalUncompressedData;
     }
     compressed_size = zi->ci.totalCompressedData;
-    
-#    ifndef NOCRYPT
-    compressed_size += zi->ci.crypt_header_size;
-#    endif
     
     // update Current Item crc and sizes,
     if(compressed_size >= 0xffffffff || uncompressed_size >= 0xffffffff || zi->ci.pos_local_header >= 0xffffffff)
